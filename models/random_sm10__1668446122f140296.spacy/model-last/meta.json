@@ -1,0 +1,47 @@
+{
+  "lang":"pl",
+  "name":"pipeline",
+  "version":"0.0.0",
+  "spacy_version":">=3.4.2,<3.5.0",
+  "description":"",
+  "author":"",
+  "email":"",
+  "url":"",
+  "license":"",
+  "spacy_git_version":"Unknown",
+  "vectors":{
+    "width":0,
+    "vectors":0,
+    "keys":0,
+    "name":null,
+    "mode":"default"
+  },
+  "labels":{
+    "tok2vec":[
+
+    ],
+    "spancat":[
+      "nam_liv_person",
+      "nam_loc_gpe_country",
+      "nam_loc_gpe_city"
+    ]
+  },
+  "pipeline":[
+    "tok2vec",
+    "spancat"
+  ],
+  "components":[
+    "tok2vec",
+    "spancat"
+  ],
+  "disabled":[
+
+  ],
+  "performance":{
+    "spans_sc_f":0.5454545455,
+    "spans_sc_p":0.6818181818,
+    "spans_sc_r":0.4545454545,
+    "tok2vec_loss":0.6289244587,
+    "spancat_loss":149.0021911476
+  }
+}
