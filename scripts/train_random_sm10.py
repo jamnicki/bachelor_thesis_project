@@ -5,8 +5,10 @@ from spacy.tokens import DocBin
 
 from pathlib import Path
 from jsonlines import jsonlines
+from collections import defaultdict
 import random
 from time import time as etime
+from datetime import datetime as dt
 
 
 def query_random(records, exclude, n_instances):
@@ -41,19 +43,20 @@ def main():
     DATA_DIR = Path("data")
     TRAIN_DB = DATA_DIR / Path("inzynierka-kpwr-train-3.spacy")
     TEST_DB = DATA_DIR / Path("inzynierka-kpwr-test-3.spacy")
-    TEMP_DB = DATA_DIR / Path("temp-train.spacy")
+    TEMP_DB = DATA_DIR / Path(".temp-train.spacy")
     LOGS_DIR = Path("logs")
     CONFIG_DIR = Path("config") / Path("spacy")
     CONFIG = CONFIG_DIR / Path("config_sm.cfg")
     MODELS_DIR = Path("models")
     MODELS_DIR.mkdir(exist_ok=True)
     MODEL_OUT = MODELS_DIR / Path(f"{NAME}__{_start_etime_str}.spacy")
-    MODEL_LAST = MODEL_OUT / Path("model-last")
+    MODEL_BEST = MODEL_OUT / Path("model-best")
     METRICS_OUT = LOGS_DIR / Path(f"{NAME}__{_start_etime_str}.metrics.jsonl")
 
     SEED = 42
     SPANS_KEY = "sc"
-    N_INSTANCES = 10
+    N_INSTANCES = 50
+    MAX_EPOCHS = 100
 
     random.seed(SEED)
     assert not MODEL_OUT.exists()
@@ -67,11 +70,15 @@ def main():
     spans_num_history = []
     db = DocBin()
     queried = set()
+    labels_queried = defaultdict(int)
     while True:
         if iteration > max_iters or len(queried) >= docs_train_len:
             break
+        datetime_str = dt.now().strftime("%d-%m-%Y %H:%M:%S")
 
         for q_idx, q_doc in query_random(docs_train, queried, N_INSTANCES):
+            for span in q_doc.spans[SPANS_KEY]:
+                labels_queried[span.label_] += 1
             queried.add(q_idx)
             db.add(q_doc)
             spans_queried += len(q_doc.spans[SPANS_KEY])
@@ -82,16 +89,23 @@ def main():
         train(CONFIG,
               output_path=MODEL_OUT,
               overrides={
-                  "training.seed": SEED,
                   "paths.train": str(TEMP_DB),
-                  "paths.dev": str(TEST_DB)
+                  "paths.dev": str(TEST_DB),
+                  "training.seed": SEED,
+                  "training.max_epochs": MAX_EPOCHS,
               })
 
-        eval_metrics = evaluate(MODEL_LAST, TEST_DB)
+        eval_metrics = evaluate(MODEL_BEST, TEST_DB)
 
-        results = {"_iteration": iteration, "_spans_num": spans_queried}
+        results = {
+            "date": datetime_str,
+            "_iteration": iteration,
+            "_spans_count": spans_queried,
+            "_labels_count": labels_queried
+        }
         results.update(eval_metrics)
 
+        iteration += 1
         log_results(results,
                     out=METRICS_OUT)
 
