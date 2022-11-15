@@ -161,3 +161,8 @@ cython_debug/
 
 .temp*
 papers/*.pdf
+
+logs/
+
+models/*
+!/models/final*
