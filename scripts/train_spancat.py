@@ -166,8 +166,18 @@ def main():
     # Render the model's predictions
     logging.info("Rendering the model's sample prediction...")
     with nlp.select_pipes(enable=COMPONENT):
-        pred = nlp(test_data[0].text)
-    render_spans(pred, SPANS_KEY)
+        txt = test_data[0].text
+        print(txt)
+        pred = nlp(txt)
+
+    # -->> render_spans(pred, SPANS_KEY)
+    #
+    # doesn't work and yields an UserWarning:
+    # [W117] No spans to visualize found in Doc object with spans_key: 'sc'.
+    # If this is surprising to you, make sure the Doc was processed using
+    # a model that supports span categorization, and check the
+    # `doc.spans[spans_key]` property manually if necessary.
+    # warnings.warn(Warnings.W117.format(spans_key=spans_key))
 
     # Save the model to binary file
     logging.info(f"Saving model to {MODEL_OUT}...")
