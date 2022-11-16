@@ -1,0 +1,13 @@
+name: bachelor_tp_visuals
+
+channels:
+  - conda-forge
+
+dependencies:
+  - pip==22.3.1
+  - python==3.8
+  - bokeh
+  - ipywidgets
+
+  - pip:
+    - jsonlines
