@@ -99,6 +99,7 @@ def main():
     COMPONENT = "spancat"
     SPANS_KEY = "sc"
 
+    random.seed(SEED)
     fix_random_seed(SEED)
     assert not MODEL_OUT.exists()
 
