@@ -6,25 +6,17 @@ from spacy import displacy
 from pathlib import Path
 from jsonlines import jsonlines
 from collections import defaultdict
-from random import randint
 from tqdm import tqdm
+import random
 from time import time as etime
 from datetime import datetime as dt
 
+# error encountered in attempt of import the active learning local module
+# I will solve this problem later, conda env things
+from _temp_query_strategies import query_random
+
 import logging
 logging.basicConfig(level=logging.INFO)
-
-
-def query_random(records, exclude, n_instances):
-    """Random query strategy"""
-    n_queried = 0
-    max_idx = len(records) - 1
-    while n_queried < n_instances:
-        idx = randint(0, max_idx)
-        if idx not in exclude:
-            exclude.add(idx)
-            n_queried += 1
-            yield idx, records[idx]
 
 
 def log_results(results, out):
@@ -76,7 +68,7 @@ def _wait_for_annotations(timeout=300):
 
 
 def main():
-    NAME = "random_lg_full"
+    NAME = "random_blank_full"
 
     _start_etime_str = str(etime()).replace(".", "f")
     DATA_DIR = Path("data")
@@ -108,7 +100,7 @@ def main():
     train_data, test_data = load_data(nlp, TRAIN_DB, TEST_DB)
     train_len = len(train_data)
 
-    # Training loop
+    # Learning loop
     iteration = 1
     spans_queried = 0
     queried = set()
@@ -134,15 +126,15 @@ def main():
         logging.debug(f"Querying {N_INSTANCES} instances...")
         q_indexes = set()
         q_data = []
-        for q_idx, q_doc in query_random(train_data, queried, N_INSTANCES):
-            q_doc_annotation = q_doc.to_dict()["doc_annotation"]
+        for q_idx, q_example in query_random(train_data, queried, N_INSTANCES):
+            q_doc_annotation = q_example.to_dict()["doc_annotation"]
             component_spans = q_doc_annotation["spans"][SPANS_KEY]
             for span in component_spans:
                 # !! empty 'kd_id' field
                 span_label = span[2]
                 labels_queried[span_label] += 1
             q_indexes.add(q_idx)
-            q_data.append(q_doc)
+            q_data.append(q_example)
             spans_queried += len(component_spans)
         queried.update(q_indexes)
 
