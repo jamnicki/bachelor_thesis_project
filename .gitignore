@@ -161,6 +161,8 @@ cython_debug/
 
 
 .temp*
+_temp*
+
 papers/*.pdf
 
 logs/
