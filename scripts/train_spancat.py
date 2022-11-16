@@ -65,6 +65,16 @@ def data_exhausted(queried_idxs, set_len):
     return len(queried_idxs) >= set_len
 
 
+def _wait_for_annotations(timeout=300):
+    """Wait for user to annotate the data"""
+    msg = "Annotate the data then press [Enter] to continue or [q] to quit."
+    try:
+        _input = input(msg)
+    except KeyboardInterrupt:
+        if "q" in _input.lower():
+            return None
+
+
 def main():
     NAME = "random_lg_full"
 
