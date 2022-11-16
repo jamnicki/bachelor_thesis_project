@@ -12,7 +12,7 @@ from time import time as etime
 from datetime import datetime as dt
 
 import logging
-logging.basicConfig(level=logging.WARNING)
+logging.basicConfig(level=logging.INFO)
 
 
 def query_random(records, exclude, n_instances):
@@ -70,16 +70,18 @@ def main():
 
     _start_etime_str = str(etime()).replace(".", "f")
     DATA_DIR = Path("data")
-    TRAIN_DB = DATA_DIR / Path("inzynierka-kpwr-train-3.spacy")
-    TEST_DB = DATA_DIR / Path("inzynierka-kpwr-test-3.spacy")
-    LOGS_DIR = Path("logs")
-    MODELS_DIR = Path("models")
+    MODELS_DIR = Path("models") / Path("scripts")
+    LOGS_DIR = Path("logs") / Path("scripts")
+    DATA_DIR.mkdir(exist_ok=True)
     MODELS_DIR.mkdir(exist_ok=True)
+    LOGS_DIR.mkdir(exist_ok=True)
+    TRAIN_DB = DATA_DIR / Path("inzynierka-kpwr-train-3-full.spacy")
+    TEST_DB = DATA_DIR / Path("inzynierka-kpwr-test-3-full.spacy")
     MODEL_OUT = MODELS_DIR / Path(f"{NAME}__{_start_etime_str}.spacy")
     METRICS_OUT = LOGS_DIR / Path(f"{NAME}__{_start_etime_str}.metrics.jsonl")
 
     SEED = 42
-    MAX_ITER = 0
+    MAX_ITER = 50
     N_INSTANCES = 50
     TRAIN_BATCH_SIZE = int(N_INSTANCES // 5)  # default 1000?
     TEST_BATCH_SIZE = int(N_INSTANCES // 5)  # default 1000?
@@ -98,18 +100,21 @@ def main():
     # Training loop
     iteration = 1
     spans_queried = 0
-    spans_num_history = []
     queried = set()
     labels_queried = defaultdict(int)
     _extended_train_data = []
     pbar = tqdm(total=MAX_ITER)  # TODO: wrong! data could be exhausted before
     while True:
+        it_t0 = etime()
+        pbar.update(1)
         # Stopping criteria
         if iteration > MAX_ITER > 0:
             logging.warning("Stopped by max iterations")
+            pbar.close()
             break
         if data_exhausted(queried, train_len):
             logging.warning("Stopped by data exhaustion")
+            pbar.close()
             break
 
         datetime_str = dt.now().strftime("%d-%m-%Y %H:%M:%S")
@@ -129,7 +134,6 @@ def main():
             q_data.append(q_doc)
             spans_queried += len(component_spans)
         queried.update(q_indexes)
-        spans_num_history.append(spans_queried)
 
         # Extend the training dataset
         _extended_train_data.extend(q_data)
@@ -137,10 +141,12 @@ def main():
         # Update the model with queried data
         logging.debug("Updating the model with queried data...")
         losses = {}
+        optimizer = nlp.initialize()
         with nlp.select_pipes(enable=COMPONENT):
-            optimizer = nlp.initialize()
             for batch in minibatch(_extended_train_data, TRAIN_BATCH_SIZE):
-                losses = nlp.update(batch, losses=losses, sgd=optimizer)
+                losses = nlp.update(batch,
+                                    losses=losses,
+                                    sgd=optimizer)
         sc_loss = losses[COMPONENT]
 
         # Evaluate the model on the test set
@@ -148,36 +154,31 @@ def main():
         with nlp.select_pipes(enable=COMPONENT):
             eval_metrics = nlp.evaluate(test_data, batch_size=TEST_BATCH_SIZE)
 
+        iteration_time = etime() - it_t0
+
         results = {
             "_date": datetime_str,
             "_iteration": iteration,
+            "_iteration_time": iteration_time,
             "_spans_count": spans_queried,
             "_labels_count": labels_queried,
             "_sc_loss": sc_loss
         }
         results.update(eval_metrics)
-
         log_results(results,
                     out=METRICS_OUT)
+
         iteration += 1
-        pbar.update(1)
-    pbar.close()
 
     # Render the model's predictions
-    logging.info("Rendering the model's sample prediction...")
-    with nlp.select_pipes(enable=COMPONENT):
-        txt = test_data[0].text
-        print(txt)
-        pred = nlp(txt)
+    txt = test_data[0].text
+    pred = nlp(txt)
 
-    # -->> render_spans(pred, SPANS_KEY)
-    #
-    # doesn't work and yields an UserWarning:
-    # [W117] No spans to visualize found in Doc object with spans_key: 'sc'.
-    # If this is surprising to you, make sure the Doc was processed using
-    # a model that supports span categorization, and check the
-    # `doc.spans[spans_key]` property manually if necessary.
-    # warnings.warn(Warnings.W117.format(spans_key=spans_key))
+    logging.info("Rendering the model's sample prediction...")
+    if pred.spans[SPANS_KEY]:
+        render_spans(pred, SPANS_KEY)
+    else:
+        logging.warning("Nothing to render! No spans found.")
 
     # Save the model to binary file
     logging.info(f"Saving model to {MODEL_OUT}...")
