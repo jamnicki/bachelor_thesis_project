@@ -6,12 +6,13 @@ from spacy import displacy
 from pathlib import Path
 from jsonlines import jsonlines
 from collections import defaultdict
+from collections.abc import Iterable
 from tqdm import tqdm
 import random
 from time import time as etime
 from datetime import datetime as dt
 
-from _temp_query_strategies import query_random
+from _temp_query_strategies import query_random, query_least_confidence
 
 import logging
 logging.basicConfig(level=logging.DEBUG)
@@ -57,6 +58,8 @@ def data_exhausted(queried_idxs, set_len):
 
 def _wait_for_annotations(timeout=300):
     """Wait for user to annotate the data"""
+    # FIXME: implement Argilla "done annotating" event listener, continue when
+    #        the event is received
     msg = "Annotate the data then press [Enter] to continue or [q] to quit."
     try:
         _input = input(msg)
@@ -76,19 +79,16 @@ def stop_criteria(iteration, max_iter, queried, set_len):
     return False
 
 
-def _query(func, _labels_queried, _n_instances, _spans_key,
-           _queried, **kwargs_dict):
+def _query(func, func_kwargs, _labels_queried, _queried, spans_key):
     """Query the data using given function and keyword arguments.
-       Update variables in place
+       Using inplace object mutation on variables that start with underscore!
     """
-    logging.debug(f"Querying {_n_instances} instances...")
     q_indexes = set()
     q_data = []
-    for q_idx, q_example in func(**kwargs_dict):
+    for q_idx, q_example in func(**func_kwargs):
         q_doc_annotation = q_example.to_dict()["doc_annotation"]
-        component_spans = q_doc_annotation["spans"][_spans_key]
+        component_spans = q_doc_annotation["spans"][spans_key]
         for span in component_spans:
-            # !! empty 'kd_id' field
             span_label = span[2]
             _labels_queried[span_label] += 1
             _labels_queried["_all"] += 1
@@ -98,8 +98,129 @@ def _query(func, _labels_queried, _n_instances, _spans_key,
     return q_indexes, q_data
 
 
+def _update_model(nlp, included_components, examples, batch_size):
+    """Update the model with the given data"""
+    logging.debug("Updating the model with queried data...")
+    losses = {}
+    optimizer = nlp.initialize()
+    with nlp.select_pipes(enable=included_components):
+        for batch in minibatch(examples, batch_size):
+            nlp.update(batch, losses=losses, sgd=optimizer)
+
+    if isinstance(included_components, str):
+        return losses[included_components]
+    if isinstance(included_components, Iterable):
+        return {
+            component: losses[component]
+            for component in included_components
+        }
+    return None
+
+
+def _evaluate_model(nlp, included_components, examples, batch_size):
+    """Evaluate the model with the given data.
+       Returns spacy's evaluation metrics"""
+    logging.debug("Evaluating the model...")
+    with nlp.select_pipes(enable=included_components):
+        eval_metrics = nlp.evaluate(examples, batch_size=batch_size)
+    return eval_metrics
+
+
+def _render_sample_prediction(nlp, examples, spans_key):
+    rand_indx = random.randint(0, len(examples))
+    text = examples[rand_indx].text
+    pred = nlp(text)
+
+    logging.info("Rendering the model's sample prediction...")
+    if pred.spans[spans_key]:
+        render_spans(pred, spans_key)
+    else:
+        logging.warning("Nothing to render! No spans found.")
+
+
+def _run_loop(nlp, train_len, train_data, eval_data,
+              included_components, max_iter, n_instances,
+              train_batch_size, eval_batch_size,
+              results_out, spans_key):
+    """Functional approach based Active Learning loop implementation.
+       Using inplace objects mutation!"""
+    iteration = 1
+    queried = set()
+    labels_queried = defaultdict(int)
+    enlarged_train_data = []
+
+    pbar = tqdm(total=max_iter)
+    while True:
+        it_t0 = etime()
+        datetime_str = dt.now().strftime("%d-%m-%Y %H:%M:%S")
+
+        if stop_criteria(iteration, max_iter, queried, train_len):
+            break
+
+        func_kwargs = {
+            "examples": train_data,
+            "exclude": queried,
+            "nlp": nlp,
+            "spans_key": spans_key,
+            "n_instances": n_instances
+        }
+        if iteration != 1:
+            q_func = query_least_confidence
+        else:
+            logging.info("Querying seed data...")
+            func_kwargs.pop("spans_key")
+            q_func = query_random
+        _, q_data = _query(
+            func=q_func,
+            func_kwargs=func_kwargs,
+            _labels_queried=labels_queried,
+            _queried=queried,
+            spans_key=spans_key
+        )
+
+        # TODO: Log queried examples into Argilla as records wth Default status
+
+        # TODO: query_oracle(), returns record indexes, annotations
+        #        > TODO: create dummy oracle based on our train data
+
+        # TODO: insert oracle's annotations into train data
+
+        # Extend the training dataset
+        enlarged_train_data.extend(q_data)
+
+        # Update the model with queried data
+        sc_loss = _update_model(nlp,
+                                included_components=included_components,
+                                examples=enlarged_train_data,
+                                batch_size=train_batch_size)
+
+        # Evaluate the model on the test set
+        eval_metrics = _evaluate_model(nlp,
+                                       included_components=included_components,
+                                       examples=eval_data,
+                                       batch_size=eval_batch_size)
+
+        iteration_time = etime() - it_t0
+
+        # Collect and save the results
+        results = {
+            "_date": datetime_str,
+            "_iteration": iteration,
+            "_iteration_time": iteration_time,
+            "_spans_count": labels_queried["_all"],
+            "_labels_count": labels_queried,
+            "_sc_loss": sc_loss
+        }
+        results.update(eval_metrics)
+        log_results(results, out=results_out)
+
+        iteration += 1
+        pbar.update(1)
+    pbar.close()
+
+
 def main():
-    """pseudocode
+    """AL loop pseudocode
     Input: Unlabeled dataset Du, Base model Mb, Acquisition Batch Size B,
            Strategy S, Labeling budget L
     Output: Labeled dataset Dl, Trained model Mt
@@ -115,16 +236,19 @@ def main():
         Mt = Train(Mb, Dl)
     return Dl, Mt
     """
+    # TODO: FIXME: Refator to object based approach, obviously
+
+    _start_etime_str = str(etime()).replace(".", "f")
 
     NAME = "test_active_learned_kpwr-short"
 
-    _start_etime_str = str(etime()).replace(".", "f")
     DATA_DIR = Path("data")
     MODELS_DIR = Path("models") / Path("scripts")
     LOGS_DIR = Path("logs") / Path("scripts")
     DATA_DIR.mkdir(exist_ok=True)
     MODELS_DIR.mkdir(exist_ok=True)
     LOGS_DIR.mkdir(exist_ok=True)
+
     TRAIN_DB = DATA_DIR / Path("inzynierka-kpwr-train-3.spacy")
     TEST_DB = DATA_DIR / Path("inzynierka-kpwr-test-3.spacy")
     MODEL_OUT = MODELS_DIR / Path(f"{NAME}__{_start_etime_str}.spacy")
@@ -133,8 +257,8 @@ def main():
     SEED = 42
     MAX_ITER = 10
     N_INSTANCES = 10
-    TRAIN_BATCH_SIZE = int(N_INSTANCES // 5)  # default 1000?
-    TEST_BATCH_SIZE = int(N_INSTANCES // 5)  # default 1000?
+    TRAIN_BATCH_SIZE = int(N_INSTANCES // 5)
+    TEST_BATCH_SIZE = int(N_INSTANCES // 5)
     LABELS = ["nam_liv_person", "nam_loc_gpe_city", "nam_loc_gpe_country"]
     COMPONENT = "spancat"
     SPANS_KEY = "sc"
@@ -148,80 +272,13 @@ def main():
     train_data, test_data = load_data(nlp, TRAIN_DB, TEST_DB)
     train_len = len(train_data)
 
-    # Training loop
-    iteration = 1
-    queried = set()
-    labels_queried = defaultdict(int)
-    enlarged_train_data = []
-    pbar = tqdm(total=MAX_ITER)  # TODO: wrong! data could be exhausted before
-    while True:
-        it_t0 = etime()
-        pbar.update(1)
-        datetime_str = dt.now().strftime("%d-%m-%Y %H:%M:%S")
-
-        if stop_criteria(iteration, MAX_ITER, queried, train_len):
-            break
-
-        q_func = query_random
-        func_kwargs = {
-            "records": train_data,
-            "exclude": queried,
-            "n_instances": N_INSTANCES
-        }
-        _, q_data = _query(
-            func=q_func,
-            _labels_queried=labels_queried,
-            _n_instances=N_INSTANCES,
-            _spans_key=SPANS_KEY,
-            _queried=queried,
-            **func_kwargs
-        )
-
-        # Extend the training dataset
-        enlarged_train_data.extend(q_data)
-
-        # Update the model with queried data
-        logging.debug("Updating the model with queried data...")
-        losses = {}
-        optimizer = nlp.initialize()
-        with nlp.select_pipes(enable=COMPONENT):
-            for batch in minibatch(enlarged_train_data, TRAIN_BATCH_SIZE):
-                nlp.update(batch,
-                           losses=losses,
-                           sgd=optimizer)
-        sc_loss = losses[COMPONENT]
-
-        # Evaluate the model on the test set
-        logging.debug("Evaluating the model on the test set...")
-        with nlp.select_pipes(enable=COMPONENT):
-            eval_metrics = nlp.evaluate(test_data, batch_size=TEST_BATCH_SIZE)
-
-        iteration_time = etime() - it_t0
-
-        results = {
-            "_date": datetime_str,
-            "_iteration": iteration,
-            "_iteration_time": iteration_time,
-            "_spans_count": labels_queried["_all"],
-            "_labels_count": labels_queried,
-            "_sc_loss": sc_loss
-        }
-        results.update(eval_metrics)
-        log_results(results,
-                    out=METRICS_OUT)
-
-        iteration += 1
+    _run_loop(nlp, train_len, train_data, test_data,
+              COMPONENT, MAX_ITER, N_INSTANCES,
+              TRAIN_BATCH_SIZE, TEST_BATCH_SIZE,
+              METRICS_OUT, SPANS_KEY)
 
     # Render the model's sample prediction
-    rand_indx = random.randint(0, len(test_data))
-    text = test_data[rand_indx].text
-    pred = nlp(text)
-
-    logging.info("Rendering the model's sample prediction...")
-    if pred.spans[SPANS_KEY]:
-        render_spans(pred, SPANS_KEY)
-    else:
-        logging.warning("Nothing to render! No spans found.")
+    _render_sample_prediction(nlp, test_data, SPANS_KEY)
 
     # Save the model to binary file
     logging.info(f"Saving model to {MODEL_OUT}...")
