@@ -76,7 +76,7 @@ def stop_criteria(iteration, max_iter, queried, set_len):
     return False
 
 
-def _query(func, _labels_queried, _spans_queried, _n_instances, _spans_key,
+def _query(func, _labels_queried, _n_instances, _spans_key,
            _queried, **kwargs_dict):
     """Query the data using given function and keyword arguments.
        Update variables in place
@@ -91,9 +91,9 @@ def _query(func, _labels_queried, _spans_queried, _n_instances, _spans_key,
             # !! empty 'kd_id' field
             span_label = span[2]
             _labels_queried[span_label] += 1
+            _labels_queried["_all"] += 1
         q_indexes.add(q_idx)
         q_data.append(q_example)
-        _spans_queried["count"] += len(component_spans)
     _queried.update(q_indexes)
     return q_indexes, q_data
 
@@ -150,7 +150,6 @@ def main():
 
     # Training loop
     iteration = 1
-    spans_queried = {"count": 0}
     queried = set()
     labels_queried = defaultdict(int)
     enlarged_train_data = []
@@ -172,7 +171,6 @@ def main():
         _, q_data = _query(
             func=q_func,
             _labels_queried=labels_queried,
-            _spans_queried=spans_queried,
             _n_instances=N_INSTANCES,
             _spans_key=SPANS_KEY,
             _queried=queried,
@@ -204,7 +202,7 @@ def main():
             "_date": datetime_str,
             "_iteration": iteration,
             "_iteration_time": iteration_time,
-            "_spans_count": spans_queried["count"],
+            "_spans_count": labels_queried["_all"],
             "_labels_count": labels_queried,
             "_sc_loss": sc_loss
         }
