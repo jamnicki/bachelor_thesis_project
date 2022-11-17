@@ -173,9 +173,10 @@ def main():
 
         iteration += 1
 
-    # Render the model's predictions
-    txt = test_data[0].text
-    pred = nlp(txt)
+    # Render the model's sample prediction
+    rand_indx = random.randint(0, len(test_data))
+    text = test_data[rand_indx].text
+    pred = nlp(text)
 
     logging.info("Rendering the model's sample prediction...")
     if pred.spans[SPANS_KEY]:
