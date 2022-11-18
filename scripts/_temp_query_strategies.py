@@ -1,10 +1,11 @@
+import numpy as np
 from random import randint
 
 
 def query_random(examples, exclude, n_instances):
     """Random sampling strategy."""
     n_queried = 0
-    max_idx = len(examples)
+    max_idx = len(examples) - 1
     _inner_exclude = set(exclude)
     while n_queried < n_instances:
         idx = randint(0, max_idx)
@@ -14,35 +15,34 @@ def query_random(examples, exclude, n_instances):
             yield idx, examples[idx]
 
 
-def query_least_confidence(nlp, examples, exclude, n_instances, spans_key):
-    """Least confidence sampling strategy for multilabeled data for
+def query_least_confidence(nlp, included_components, examples,
+                           exclude, n_instances, spans_key):
+    """Least confidence sampling strategy for multilabeled data for spaCy's
     SpanCategorizer. Based on mean score of all labels for each span.
     """
     def _get_least_confident():
         """Calculate mean score of all labels for single span."""
-        # TODO: Refactor for better performance
-        scores = []
-        score_indexes = []
+        scores = np.repeat(2.0, ex_len)  # 2 means unscored, 0 < score < 1
+        # idx < 0 means unscored
+        scores_idxs = np.linspace(-1, 0, ex_len, endpoint=False)
         for i in range(ex_len):
-            if i in _inner_exclude:
+            if i in exclude:
                 continue
-            example = _inner_examples[i]
-            pred = nlp(example.text)
+            example = examples[i]
+            with nlp.select_pipes(enable=included_components):
+                pred = nlp(example.text)
             spans = pred.spans[spans_key]
             if spans:
-                example_mean_score = spans.attrs["scores"].mean()
-                score_indexes.append(i)
-                scores.append(example_mean_score)
-        min_score_idx = scores.index(min(scores))
-        return score_indexes[min_score_idx]
+                scores[i] = spans.attrs["scores"].mean()
+                scores_idxs[i] = i
+        non_zero_score_argmin = np.argmin(scores[np.nonzero(scores)])
+        return int(scores_idxs[non_zero_score_argmin])
 
-    _inner_examples = list(examples)
-    _inner_exclude = set(exclude)
     n_queried = 0
-    ex_len = len(_inner_examples)
+    ex_len = len(examples)
     while n_queried < n_instances:
         idx = _get_least_confident()
-        _inner_exclude.add(idx)
-        example = _inner_examples[idx]
+        exclude.add(idx)
+        example = examples[idx]
         n_queried += 1
         yield idx, example
