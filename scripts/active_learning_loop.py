@@ -3,6 +3,9 @@ from spacy.util import minibatch, fix_random_seed
 from spacy.training import Corpus
 from spacy import displacy
 
+import argilla as rg
+from argilla.client.sdk.commons.errors import NotFoundApiError as rgDatasetNotFound  # noqa: E501
+
 from pathlib import Path
 from jsonlines import jsonlines
 from collections import defaultdict
@@ -52,28 +55,28 @@ def render_spans(prediction, spans_key):
                              "spans_key": spans_key})
 
 
-def data_exhausted(queried_idxs, set_len):
-    return len(queried_idxs) >= set_len
+def data_exhausted(queried_idxs, set_len, n_instaces):
+    return len(queried_idxs) + n_instaces > set_len
 
 
-def _wait_for_annotations(timeout=300):
+def _wait_for_user():
     """Wait for user to annotate the data"""
-    # FIXME: implement Argilla "done annotating" event listener, continue when
-    #        the event is received
+    # TODO: implement Argilla "done annotating" event listener, continue when
+    #       the event is received
     msg = "Annotate the data then press [Enter] to continue or [q] to quit."
-    try:
-        _input = input(msg)
-    except KeyboardInterrupt:
-        if "q" in _input.lower():
-            return None
+    msg.join("\n")
+    _input = input(msg)
+    if "q" in _input.lower():
+        return 1
+    return 0
 
 
-def stop_criteria(iteration, max_iter, queried, set_len):
+def stop_criteria(iteration, max_iter, queried, set_len, n_instaces):
     """Return True if stop criteria is met, False otherwise. Log the reason."""
     if iteration > max_iter > 0:
         logging.warning("Stopped by max iterations")
         return True
-    if data_exhausted(queried, set_len):
+    if data_exhausted(queried, set_len, n_instaces):
         logging.warning("Stopped by data exhaustion")
         return True
     return False
@@ -98,6 +101,66 @@ def _query(func, func_kwargs, _labels_queried, _queried, spans_key):
     return q_indexes, q_data
 
 
+def ann_spacy2rg(spacy_ann):
+    """Convert spaCy's span annotation to Argilla's"""
+    start, end, label, *_ = spacy_ann
+    return label, start, end
+
+
+def ann_rg2spacy(rg_ann):
+    """Convert Argilla's span annotation to spaCy's"""
+    label, start, end = rg_ann
+    return start, end, label
+
+
+def serve_query_data_for_annotation(
+        examples, q_indexes, ds_name, suggester_agent, spans_key):
+    """Log the records to Argilla from given examples. Overwrite existing."""
+    logging.info("Serving the queried data to annotation...")
+    records = []
+    for q_idx, example in zip(q_indexes, examples):
+        example_dict = example.to_dict()
+        doc_annotation = example_dict["doc_annotation"]
+        suggestions = doc_annotation["spans"][spans_key]
+        orth_list = example_dict["token_annotation"]["ORTH"]
+        ann_suggestions = [
+            ann_spacy2rg(annotation)
+            for annotation in suggestions
+        ]
+        rg_record = rg.TokenClassificationRecord(
+            id=q_idx,
+            text=example.text,
+            tokens=orth_list,
+            prediction=ann_suggestions,
+            prediction_agent=suggester_agent,
+            status="Default"
+        )
+        records.append(rg_record)
+    rg.log(records, ds_name)
+
+
+def query_oracle(q_indexes, ds_name):
+    """Query oracle"""
+    annotated_records = rg.load(ds_name, ids=q_indexes)
+    for record in annotated_records:
+        yield record.id, record.annotation
+
+
+def dummy_query_oracle(train_data, q_indexes, spans_key):
+    """Dummy query oracle for experimental purposes"""
+    for q_idx, train_data_idx in enumerate(q_indexes):
+        example = train_data[train_data_idx]
+        doc_annotation = example.to_dict()["doc_annotation"]
+        annotation = doc_annotation["spans"][spans_key]
+        yield q_idx, annotation
+
+
+def _insert_oracle_annotation(_q_data, q_idx, q_oracle_ann, spans_key):
+    """In-place insertion of oracle annotation into the queried data"""
+    # FIXME: does't work, Example object in not subscriptable
+    _q_data[q_idx]["doc_annotation"]["spans"][spans_key] = q_oracle_ann
+
+
 def _update_model(nlp, included_components, examples, batch_size):
     """Update the model with the given data"""
     logging.debug("Updating the model with queried data...")
@@ -105,7 +168,7 @@ def _update_model(nlp, included_components, examples, batch_size):
     optimizer = nlp.initialize()
     with nlp.select_pipes(enable=included_components):
         for batch in minibatch(examples, batch_size):
-            nlp.update(batch, losses=losses, sgd=optimizer)
+            losses = nlp.update(batch, losses=losses, sgd=optimizer)
 
     if isinstance(included_components, str):
         return losses[included_components]
@@ -114,7 +177,7 @@ def _update_model(nlp, included_components, examples, batch_size):
             component: losses[component]
             for component in included_components
         }
-    return None
+    logging.error(f"{_update_model.__name__} function with no return!")
 
 
 def _evaluate_model(nlp, included_components, examples, batch_size):
@@ -141,26 +204,28 @@ def _render_sample_prediction(nlp, examples, spans_key):
 def _run_loop(nlp, train_len, train_data, eval_data,
               included_components, max_iter, n_instances,
               train_batch_size, eval_batch_size,
-              results_out, spans_key):
+              rg_ds_name, rg_suggester_agent,
+              results_out, spans_key,
+              dummy):
     """Functional approach based Active Learning loop implementation.
        Using inplace objects mutation!"""
     iteration = 1
     queried = set()
     labels_queried = defaultdict(int)
-    enlarged_train_data = []
-
+    _loop_train_data = []
     pbar = tqdm(total=max_iter)
     while True:
         it_t0 = etime()
         datetime_str = dt.now().strftime("%d-%m-%Y %H:%M:%S")
 
-        if stop_criteria(iteration, max_iter, queried, train_len):
+        if stop_criteria(iteration, max_iter, queried, train_len, n_instances):
             break
 
         func_kwargs = {
             "examples": train_data,
             "exclude": queried,
             "nlp": nlp,
+            "included_components": included_components,
             "spans_key": spans_key,
             "n_instances": n_instances
         }
@@ -168,9 +233,12 @@ def _run_loop(nlp, train_len, train_data, eval_data,
             q_func = query_least_confidence
         else:
             logging.info("Querying seed data...")
-            func_kwargs.pop("spans_key")
+            del func_kwargs["nlp"]
+            del func_kwargs["included_components"]
+            del func_kwargs["spans_key"]
             q_func = query_random
-        _, q_data = _query(
+
+        q_indexes, q_data = _query(
             func=q_func,
             func_kwargs=func_kwargs,
             _labels_queried=labels_queried,
@@ -178,20 +246,31 @@ def _run_loop(nlp, train_len, train_data, eval_data,
             spans_key=spans_key
         )
 
-        # TODO: Log queried examples into Argilla as records wth Default status
+        if not dummy:
+            serve_query_data_for_annotation(q_data, q_indexes,
+                                            rg_ds_name, rg_suggester_agent,
+                                            spans_key)
+            quit = _wait_for_user()
+            if quit:
+                return None
 
-        # TODO: query_oracle(), returns record indexes, annotations
-        #        > TODO: create dummy oracle based on our train data
+        # IN CASE OF DUMMY SYSTEM WE DO NOT NEED INSERT ANNOTATION TO QUERY
+        # DATA BECAUSE IT IS ALREADY THERE
+        # IT WILL BE NOT ANNOTATED IN THE FUTURE
 
-        # TODO: insert oracle's annotations into train data
+        # TODO: Insert annotations from Oracle into the enlarged training data
+
+        # for q_idx, qo_ann in dummy_query_oracle(train_data, q_indexes,
+        #                                         spans_key):
+        #     _insert_oracle_annotation(q_data, q_idx, qo_ann, spans_key)
 
         # Extend the training dataset
-        enlarged_train_data.extend(q_data)
+        _loop_train_data.extend(q_data)
 
         # Update the model with queried data
         sc_loss = _update_model(nlp,
                                 included_components=included_components,
-                                examples=enlarged_train_data,
+                                examples=_loop_train_data,
                                 batch_size=train_batch_size)
 
         # Evaluate the model on the test set
@@ -236,11 +315,15 @@ def main():
         Mt = Train(Mb, Dl)
     return Dl, Mt
     """
-    # TODO: FIXME: Refator to object based approach, obviously
+    # TODO: Refactor to object based approach, obviously
 
     _start_etime_str = str(etime()).replace(".", "f")
 
-    NAME = "test_active_learned_kpwr-short"
+    DUMMY = True
+
+    NAME = "lc_active_learned_kpwr-full"
+    AGENT_NAME = __file__.split("/")[-1].split(".")[0]
+    RG_DATASET_NAME = "active_learninig_temp_dataset"
 
     DATA_DIR = Path("data")
     MODELS_DIR = Path("models") / Path("scripts")
@@ -249,16 +332,18 @@ def main():
     MODELS_DIR.mkdir(exist_ok=True)
     LOGS_DIR.mkdir(exist_ok=True)
 
-    TRAIN_DB = DATA_DIR / Path("inzynierka-kpwr-train-3.spacy")
-    TEST_DB = DATA_DIR / Path("inzynierka-kpwr-test-3.spacy")
+    TRAIN_DB = DATA_DIR / Path("inzynierka-kpwr-train-3-full.spacy")
+    TEST_DB = DATA_DIR / Path("inzynierka-kpwr-test-3-full.spacy")
     MODEL_OUT = MODELS_DIR / Path(f"{NAME}__{_start_etime_str}.spacy")
     METRICS_OUT = LOGS_DIR / Path(f"{NAME}__{_start_etime_str}.metrics.jsonl")
 
     SEED = 42
     MAX_ITER = 10
-    N_INSTANCES = 10
+    N_INSTANCES = 5
     TRAIN_BATCH_SIZE = int(N_INSTANCES // 5)
     TEST_BATCH_SIZE = int(N_INSTANCES // 5)
+    assert 0 not in [TRAIN_BATCH_SIZE, TEST_BATCH_SIZE]
+
     LABELS = ["nam_liv_person", "nam_loc_gpe_city", "nam_loc_gpe_country"]
     COMPONENT = "spancat"
     SPANS_KEY = "sc"
@@ -268,6 +353,20 @@ def main():
     assert not MODEL_OUT.exists()
 
     nlp = init_nlp(LABELS)
+    if not DUMMY:
+        rg.monitor(nlp, RG_DATASET_NAME, agent=AGENT_NAME)
+
+    # Raise error if temporary dataset already exists
+    try:
+        if not DUMMY:
+            rg.load(RG_DATASET_NAME)
+    except rgDatasetNotFound:
+        logging.info("Temporary dataset not found and will be created")
+    else:
+        if not DUMMY:
+            # TODO: Resume annotation from previous session
+            logging.warning(f"Deleting {RG_DATASET_NAME} dataset...")
+            rg.delete(RG_DATASET_NAME)
 
     train_data, test_data = load_data(nlp, TRAIN_DB, TEST_DB)
     train_len = len(train_data)
@@ -275,7 +374,9 @@ def main():
     _run_loop(nlp, train_len, train_data, test_data,
               COMPONENT, MAX_ITER, N_INSTANCES,
               TRAIN_BATCH_SIZE, TEST_BATCH_SIZE,
-              METRICS_OUT, SPANS_KEY)
+              RG_DATASET_NAME, AGENT_NAME,
+              METRICS_OUT, SPANS_KEY,
+              DUMMY)
 
     # Render the model's sample prediction
     _render_sample_prediction(nlp, test_data, SPANS_KEY)
