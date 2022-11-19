@@ -1,3 +1,4 @@
+import os
 import numpy as np
 from random import randint
 
@@ -30,7 +31,8 @@ def query_least_confidence(nlp, included_components, examples,
             for i, example in enumerate(examples)
             if i not in exclude
         ]
-        predictions = nlp.pipe(texts, disable=disabled_comps)
+        cpus = os.cpu_count()
+        predictions = nlp.pipe(texts, disable=disabled_comps, n_process=cpus)
         for i, pred in enumerate(predictions):
             spans = pred.spans[spans_key]
             if spans:
