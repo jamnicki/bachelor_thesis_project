@@ -30,7 +30,6 @@ def query_least_confidence(nlp, included_components, examples,
             for i, example in enumerate(examples)
             if i not in exclude
         ]
-        disabled_comps = set(nlp.pipe_names) - set(included_components)
         predictions = nlp.pipe(texts, disable=disabled_comps)
         for i, pred in enumerate(predictions):
             spans = pred.spans[spans_key]
@@ -43,6 +42,7 @@ def query_least_confidence(nlp, included_components, examples,
     if isinstance(included_components, str):
         included_components = [included_components]
 
+    disabled_comps = set(nlp.pipe_names) - set(included_components)
     n_queried = 0
     ex_len = len(examples)
     while n_queried < n_instances:
