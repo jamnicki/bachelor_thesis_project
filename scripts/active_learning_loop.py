@@ -338,10 +338,10 @@ def main():
     METRICS_OUT = LOGS_DIR / Path(f"{NAME}__{_start_etime_str}.metrics.jsonl")
 
     SEED = 42
-    MAX_ITER = 10
-    N_INSTANCES = 5
-    TRAIN_BATCH_SIZE = int(N_INSTANCES // 5)
-    TEST_BATCH_SIZE = int(N_INSTANCES // 5)
+    MAX_ITER = 50
+    N_INSTANCES = 50
+    TRAIN_BATCH_SIZE = 1000
+    TEST_BATCH_SIZE = 1000
     assert 0 not in [TRAIN_BATCH_SIZE, TEST_BATCH_SIZE]
 
     LABELS = ["nam_liv_person", "nam_loc_gpe_city", "nam_loc_gpe_country"]
