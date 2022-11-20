@@ -28,7 +28,7 @@ def log_results(results, out):
         writer.write(results)
 
 
-def init_nlp(labels):
+def create_nlp(labels):
     logging.info("Initializing spaCy model...")
     nlp = Polish()
     spancat = nlp.add_pipe("spancat")
@@ -321,7 +321,7 @@ def main():
 
     DUMMY = True
 
-    NAME = "lc_active_learned_kpwr-full"
+    NAME = "active_learned_kpwr-full"
     AGENT_NAME = __file__.split("/")[-1].split(".")[0]
     RG_DATASET_NAME = "active_learninig_temp_dataset"
 
@@ -338,8 +338,8 @@ def main():
     METRICS_OUT = LOGS_DIR / Path(f"{NAME}__{_start_etime_str}.metrics.jsonl")
 
     SEED = 42
-    MAX_ITER = 50
-    N_INSTANCES = 50
+    MAX_ITER = 10
+    N_INSTANCES = 10
     TRAIN_BATCH_SIZE = 1000
     TEST_BATCH_SIZE = 1000
     assert 0 not in [TRAIN_BATCH_SIZE, TEST_BATCH_SIZE]
@@ -352,7 +352,7 @@ def main():
     fix_random_seed(SEED)
     assert not MODEL_OUT.exists()
 
-    nlp = init_nlp(LABELS)
+    nlp = create_nlp(LABELS)
     if not DUMMY:
         rg.monitor(nlp, RG_DATASET_NAME, agent=AGENT_NAME)
 
