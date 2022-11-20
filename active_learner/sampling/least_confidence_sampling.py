@@ -15,10 +15,11 @@ def query_least_confidence(nlp, included_components, examples,
 
     disabled_comps = set(nlp.pipe_names) - set(included_components)
     texts = [
-            example.text
-            for i, example in enumerate(examples)
-            if i not in exclude
-        ]
+        example.text
+        for i, example in enumerate(examples)
+        if i not in exclude
+    ]
+
     n_process = os.cpu_count()
     predictions = nlp.pipe(texts, disable=disabled_comps, n_process=n_process)
 
