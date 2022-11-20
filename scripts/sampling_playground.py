@@ -1,4 +1,7 @@
+import logging
 import numpy as np
+
+logging.basicConfig(level=logging.DEBUG)
 
 
 def main():
@@ -41,6 +44,7 @@ def main():
         include_arr[idx] = False
         example = dummy_data[idx]
         n_queried += 1
+        logging.debug(f"{idx:=4d} {example=} {scores[idx]=:.4f}")
 
 
 if __name__ == "__main__":
