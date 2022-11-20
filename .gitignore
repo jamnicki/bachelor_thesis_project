@@ -165,7 +165,8 @@ cython_debug/
 papers/*.pdf
 
 logs/
-!/logs/50iters_50instances/*
+!logs/50iters_50instances/*
 
 models/
+!/active_learner/models
 !/models/final*

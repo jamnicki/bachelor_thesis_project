@@ -1,11 +1,10 @@
 from spacy.lang.pl import Polish
 from spacy.util import fix_random_seed, minibatch, compounding
 from spacy.training import Corpus
-from spacy import displacy
 from thinc.api import Config
 
 import argilla as rg
-from argilla.client.sdk.commons.errors import NotFoundApiError as rgDatasetNotFound  # noqa: E501
+from argilla.client.sdk.commons.errors import NotFoundApiError
 
 from pathlib import Path
 from jsonlines import jsonlines
@@ -19,6 +18,9 @@ from _temp_query_strategies import query_random, query_least_confidence
 
 import logging
 logging.basicConfig(level=logging.DEBUG)
+
+random.seed(42)
+fix_random_seed(42)
 
 
 def log_results(results, out):
@@ -45,16 +47,6 @@ def load_data(nlp, train_docbin_path, test_docbin_path):
     return train_data, test_data
 
 
-def render_spans(prediction, spans_key):
-    colors = {"nam_liv_person": "RGB(87, 151, 255)",
-              "nam_loc_gpe_city": "RGB(64, 219, 64)",
-              "nam_loc_gpe_country": "RGB(235, 159, 45)"}
-    displacy.render(prediction,
-                    style="span",
-                    options={"colors": colors,
-                             "spans_key": spans_key})
-
-
 def data_exhausted(queried_idxs, set_len, n_instaces):
     return len(queried_idxs) + n_instaces > set_len
 
@@ -77,6 +69,7 @@ def stop_criteria(iteration, max_iter, queried, set_len, n_instaces):
         logging.warning("Stopped by max iterations")
         return True
     if data_exhausted(queried, set_len, n_instaces):
+        # TODO: continue and traing the model on the remaining data < n
         logging.warning("Stopped by data exhaustion")
         return True
     return False
@@ -140,14 +133,16 @@ def serve_query_data_for_annotation(
 
 
 def query_oracle(q_indexes, ds_name):
-    """Query oracle"""
+    """Query oracle for annotations.
+       Reads the annotations from Argilla records with given indexes."""
     annotated_records = rg.load(ds_name, ids=q_indexes)
     for record in annotated_records:
         yield record.id, record.annotation
 
 
 def dummy_query_oracle(train_data, q_indexes, spans_key):
-    """Dummy query oracle for experimental purposes"""
+    """Dummy query oracle for experimental purposes.
+       Simple gets annotations from the training data."""
     for q_idx, train_data_idx in enumerate(q_indexes):
         example = train_data[train_data_idx]
         doc_annotation = example.to_dict()["doc_annotation"]
@@ -157,22 +152,24 @@ def dummy_query_oracle(train_data, q_indexes, spans_key):
 
 def _insert_oracle_annotation(_q_data, q_idx, q_oracle_ann, spans_key):
     """In-place insertion of oracle annotation into the queried data"""
-    # FIXME: does't work, Example object in not subscriptable
+    # FIXME: does't work, Example object in not subscriptable, maybe create new
+    #        example object with the new annotation, then overwrite?
     _q_data[q_idx]["doc_annotation"]["spans"][spans_key] = q_oracle_ann
 
 
-def _update_model(nlp, included_components, examples):
+def update_model(nlp, optimizer, included_components, examples):
     """Update the model with the given data"""
     logging.debug("Updating the model with queried data...")
+    # TODO: get partial loss, not updated one
+    # TODO: tune compounding and dropout, outsource minibatch size
     losses = {}
-    optimizer = nlp.initialize()
     with nlp.select_pipes(enable=included_components):
         for batch in minibatch(examples, size=compounding(4.0, 32.0, 1.001)):
             losses = nlp.update(batch, losses=losses, sgd=optimizer)
     return losses
 
 
-def _evaluate_model(nlp, included_components, examples):
+def evaluate_model(nlp, included_components, examples):
     """Evaluate the model with the given data.
        Returns spacy's evaluation metrics"""
     logging.debug("Evaluating the model...")
@@ -181,19 +178,7 @@ def _evaluate_model(nlp, included_components, examples):
     return eval_metrics
 
 
-def _render_sample_prediction(nlp, examples, spans_key):
-    rand_indx = random.randint(0, len(examples))
-    text = examples[rand_indx].text
-    pred = nlp(text)
-
-    logging.info("Rendering the model's sample prediction...")
-    if pred.spans[spans_key]:
-        render_spans(pred, spans_key)
-    else:
-        logging.warning("Nothing to render! No spans found.")
-
-
-def _run_loop(nlp, nlp_config, labels,
+def _run_loop(nlp,
               train_len, train_data, eval_data,
               included_components, max_iter, n_instances,
               rg_ds_name, rg_suggester_agent,
@@ -207,19 +192,24 @@ def _run_loop(nlp, nlp_config, labels,
     _loop_train_data = []
     pbar = tqdm(total=max_iter)
     while True:
+        pbar.update(1)
         it_t0 = etime()
         datetime_str = dt.now().strftime("%d-%m-%Y %H:%M:%S")
 
         if stop_criteria(iteration, max_iter, queried, train_len, n_instances):
             break
 
+        optimizer = nlp.initialize()
+
+        # vector representations spacy thing, raises hash error
+        # if tok2vec is not disabled for nlp.pipe()
+        nlp_pipe_included = set(included_components) - set(["tok2vec"])
+
         func_kwargs = {
             "examples": train_data,
             "exclude": queried,
             "nlp": nlp,
-            # vector representations spacy thing,
-            # raises hash error if tok2vec is not disabled for nlp.pipe()
-            "included_components": set(included_components) - set(["tok2vec"]),
+            "included_components": nlp_pipe_included,
             "spans_key": spans_key,
             "n_instances": n_instances
         }
@@ -253,7 +243,6 @@ def _run_loop(nlp, nlp_config, labels,
         # IT WILL BE NOT ANNOTATED IN THE FUTURE
 
         # TODO: Insert annotations from Oracle into the enlarged training data
-
         # for q_idx, qo_ann in dummy_query_oracle(train_data, q_indexes,
         #                                         spans_key):
         #     _insert_oracle_annotation(q_data, q_idx, qo_ann, spans_key)
@@ -262,14 +251,14 @@ def _run_loop(nlp, nlp_config, labels,
         _loop_train_data.extend(q_data)
 
         # Update the model with queried data
-        losses = _update_model(nlp,
-                               included_components=included_components,
-                               examples=_loop_train_data)
+        losses = update_model(nlp, optimizer,
+                              included_components=included_components,
+                              examples=_loop_train_data)
 
         # Evaluate the model on the test set
-        eval_metrics = _evaluate_model(nlp,
-                                       included_components=included_components,
-                                       examples=eval_data)
+        eval_metrics = evaluate_model(nlp,
+                                      included_components=included_components,
+                                      examples=eval_data)
 
         iteration_time = etime() - it_t0
 
@@ -286,7 +275,6 @@ def _run_loop(nlp, nlp_config, labels,
         log_results(results, out=results_out)
 
         iteration += 1
-        pbar.update(1)
     pbar.close()
 
 
@@ -308,12 +296,14 @@ def main():
     return Dl, Mt
     """
     # TODO: Refactor to object based approach, obviously
+    # TODO: Outsource the constans to config.ini file
+    # TODO: Wrapp script with typer
 
     _start_etime_str = str(etime()).replace(".", "f")
 
     DUMMY = True
 
-    NAME = "update_fix_active_learned_kpwr-short"
+    NAME = "lc_50i_50n_update_fix_active_learned_kpwr-full"
     CONFIG_PATH = "./config/spacy/config_sm.cfg"
 
     AGENT_NAME = __file__.split("/")[-1].split(".")[0]
@@ -330,29 +320,25 @@ def main():
     TEST_DB = DATA_DIR / Path("inzynierka-kpwr-test-3-full.spacy")
     MODEL_OUT = MODELS_DIR / Path(f"{NAME}__{_start_etime_str}.spacy")
     METRICS_OUT = LOGS_DIR / Path(f"{NAME}__{_start_etime_str}.metrics.jsonl")
+    assert not MODEL_OUT.exists()
 
-    SEED = 42
-    MAX_ITER = 10
-    N_INSTANCES = 10
+    MAX_ITER = 50
+    N_INSTANCES = 50
 
     LABELS = ["nam_liv_person", "nam_loc_gpe_city", "nam_loc_gpe_country"]
     COMPONENTS = ["tok2vec", "spancat"]
     SPANS_KEY = "sc"
-
-    random.seed(SEED)
-    fix_random_seed(SEED)
-    assert not MODEL_OUT.exists()
 
     nlp_config = Config().from_disk(CONFIG_PATH)
     nlp = create_nlp(LABELS, lang=Polish, config=nlp_config)
     if not DUMMY:
         rg.monitor(nlp, RG_DATASET_NAME, agent=AGENT_NAME)
 
-    # Raise error if temporary dataset already exists
+    # DELETE AL TEMP DATASET IF EXISTS
     try:
         if not DUMMY:
             rg.load(RG_DATASET_NAME)
-    except rgDatasetNotFound:
+    except NotFoundApiError:
         logging.info("Temporary dataset not found and will be created")
     else:
         if not DUMMY:
@@ -363,15 +349,12 @@ def main():
     train_data, test_data = load_data(nlp, TRAIN_DB, TEST_DB)
     train_len = len(train_data)
 
-    _run_loop(nlp, nlp_config, LABELS,
+    _run_loop(nlp,
               train_len, train_data, test_data,
               COMPONENTS, MAX_ITER, N_INSTANCES,
               RG_DATASET_NAME, AGENT_NAME,
               METRICS_OUT, SPANS_KEY,
               DUMMY)
-
-    # Render the model's sample prediction
-    _render_sample_prediction(nlp, test_data, SPANS_KEY)
 
     # Save the model to binary file
     logging.info(f"Saving model to {MODEL_OUT}...")
