@@ -1,7 +1,8 @@
 from spacy.lang.pl import Polish
-from spacy.util import minibatch, fix_random_seed
+from spacy.util import fix_random_seed, minibatch, compounding
 from spacy.training import Corpus
 from spacy import displacy
+from thinc.api import Config
 
 import argilla as rg
 from argilla.client.sdk.commons.errors import NotFoundApiError as rgDatasetNotFound  # noqa: E501
@@ -9,7 +10,6 @@ from argilla.client.sdk.commons.errors import NotFoundApiError as rgDatasetNotFo
 from pathlib import Path
 from jsonlines import jsonlines
 from collections import defaultdict
-from collections.abc import Iterable
 from tqdm import tqdm
 import random
 from time import time as etime
@@ -28,10 +28,10 @@ def log_results(results, out):
         writer.write(results)
 
 
-def create_nlp(labels):
+def create_nlp(labels, lang, config):
     logging.info("Initializing spaCy model...")
-    nlp = Polish()
-    spancat = nlp.add_pipe("spancat")
+    nlp = lang.from_config(config)
+    spancat = nlp.get_pipe("spancat")
     for label in labels:
         spancat.add_label(label)
     return nlp
@@ -161,31 +161,23 @@ def _insert_oracle_annotation(_q_data, q_idx, q_oracle_ann, spans_key):
     _q_data[q_idx]["doc_annotation"]["spans"][spans_key] = q_oracle_ann
 
 
-def _update_model(nlp, included_components, examples, batch_size):
+def _update_model(nlp, included_components, examples):
     """Update the model with the given data"""
     logging.debug("Updating the model with queried data...")
     losses = {}
     optimizer = nlp.initialize()
     with nlp.select_pipes(enable=included_components):
-        for batch in minibatch(examples, batch_size):
+        for batch in minibatch(examples, size=compounding(4.0, 32.0, 1.001)):
             losses = nlp.update(batch, losses=losses, sgd=optimizer)
-
-    if isinstance(included_components, str):
-        return losses[included_components]
-    if isinstance(included_components, Iterable):
-        return {
-            component: losses[component]
-            for component in included_components
-        }
-    logging.error(f"{_update_model.__name__} function with no return!")
+    return losses
 
 
-def _evaluate_model(nlp, included_components, examples, batch_size):
+def _evaluate_model(nlp, included_components, examples):
     """Evaluate the model with the given data.
        Returns spacy's evaluation metrics"""
     logging.debug("Evaluating the model...")
     with nlp.select_pipes(enable=included_components):
-        eval_metrics = nlp.evaluate(examples, batch_size=batch_size)
+        eval_metrics = nlp.evaluate(examples)
     return eval_metrics
 
 
@@ -201,9 +193,9 @@ def _render_sample_prediction(nlp, examples, spans_key):
         logging.warning("Nothing to render! No spans found.")
 
 
-def _run_loop(nlp, train_len, train_data, eval_data,
+def _run_loop(nlp, nlp_config, labels,
+              train_len, train_data, eval_data,
               included_components, max_iter, n_instances,
-              train_batch_size, eval_batch_size,
               rg_ds_name, rg_suggester_agent,
               results_out, spans_key,
               dummy):
@@ -225,7 +217,9 @@ def _run_loop(nlp, train_len, train_data, eval_data,
             "examples": train_data,
             "exclude": queried,
             "nlp": nlp,
-            "included_components": included_components,
+            # vector representations spacy thing,
+            # raises hash error if tok2vec is not disabled for nlp.pipe()
+            "included_components": set(included_components) - set(["tok2vec"]),
             "spans_key": spans_key,
             "n_instances": n_instances
         }
@@ -268,16 +262,14 @@ def _run_loop(nlp, train_len, train_data, eval_data,
         _loop_train_data.extend(q_data)
 
         # Update the model with queried data
-        sc_loss = _update_model(nlp,
-                                included_components=included_components,
-                                examples=_loop_train_data,
-                                batch_size=train_batch_size)
+        losses = _update_model(nlp,
+                               included_components=included_components,
+                               examples=_loop_train_data)
 
         # Evaluate the model on the test set
         eval_metrics = _evaluate_model(nlp,
                                        included_components=included_components,
-                                       examples=eval_data,
-                                       batch_size=eval_batch_size)
+                                       examples=eval_data)
 
         iteration_time = etime() - it_t0
 
@@ -288,7 +280,7 @@ def _run_loop(nlp, train_len, train_data, eval_data,
             "_iteration_time": iteration_time,
             "_spans_count": labels_queried["_all"],
             "_labels_count": labels_queried,
-            "_sc_loss": sc_loss
+            "_sc_loss": losses["spancat"]
         }
         results.update(eval_metrics)
         log_results(results, out=results_out)
@@ -321,7 +313,9 @@ def main():
 
     DUMMY = True
 
-    NAME = "active_learned_kpwr-full"
+    NAME = "update_fix_active_learned_kpwr-short"
+    CONFIG_PATH = "./config/spacy/config_sm.cfg"
+
     AGENT_NAME = __file__.split("/")[-1].split(".")[0]
     RG_DATASET_NAME = "active_learninig_temp_dataset"
 
@@ -340,19 +334,17 @@ def main():
     SEED = 42
     MAX_ITER = 10
     N_INSTANCES = 10
-    TRAIN_BATCH_SIZE = 1000
-    TEST_BATCH_SIZE = 1000
-    assert 0 not in [TRAIN_BATCH_SIZE, TEST_BATCH_SIZE]
 
     LABELS = ["nam_liv_person", "nam_loc_gpe_city", "nam_loc_gpe_country"]
-    COMPONENT = "spancat"
+    COMPONENTS = ["tok2vec", "spancat"]
     SPANS_KEY = "sc"
 
     random.seed(SEED)
     fix_random_seed(SEED)
     assert not MODEL_OUT.exists()
 
-    nlp = create_nlp(LABELS)
+    nlp_config = Config().from_disk(CONFIG_PATH)
+    nlp = create_nlp(LABELS, lang=Polish, config=nlp_config)
     if not DUMMY:
         rg.monitor(nlp, RG_DATASET_NAME, agent=AGENT_NAME)
 
@@ -371,9 +363,9 @@ def main():
     train_data, test_data = load_data(nlp, TRAIN_DB, TEST_DB)
     train_len = len(train_data)
 
-    _run_loop(nlp, train_len, train_data, test_data,
-              COMPONENT, MAX_ITER, N_INSTANCES,
-              TRAIN_BATCH_SIZE, TEST_BATCH_SIZE,
+    _run_loop(nlp, nlp_config, LABELS,
+              train_len, train_data, test_data,
+              COMPONENTS, MAX_ITER, N_INSTANCES,
               RG_DATASET_NAME, AGENT_NAME,
               METRICS_OUT, SPANS_KEY,
               DUMMY)
