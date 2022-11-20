@@ -41,9 +41,6 @@ def query_least_confidence(nlp, included_components, examples,
         non_zero_score_argmin = np.argmin(scores[np.nonzero(scores)])
         return int(scores_idxs[non_zero_score_argmin])
 
-    if isinstance(included_components, str):
-        included_components = [included_components]
-
     disabled_comps = set(nlp.pipe_names) - set(included_components)
     n_queried = 0
     ex_len = len(examples)
