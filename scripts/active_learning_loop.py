@@ -303,7 +303,10 @@ def main():
 
     DUMMY = True
 
-    NAME = "lc_50i_50n_update_fix_active_learned_kpwr-full"
+    MAX_ITER = 13
+    N_INSTANCES = 200
+
+    NAME = f"least_conf_{MAX_ITER}i_{N_INSTANCES}n_active_learned_kpwr-full"
     CONFIG_PATH = "./config/spacy/config_sm.cfg"
 
     AGENT_NAME = __file__.split("/")[-1].split(".")[0]
@@ -321,9 +324,6 @@ def main():
     MODEL_OUT = MODELS_DIR / Path(f"{NAME}__{_start_etime_str}.spacy")
     METRICS_OUT = LOGS_DIR / Path(f"{NAME}__{_start_etime_str}.metrics.jsonl")
     assert not MODEL_OUT.exists()
-
-    MAX_ITER = 50
-    N_INSTANCES = 50
 
     LABELS = ["nam_liv_person", "nam_loc_gpe_city", "nam_loc_gpe_country"]
     COMPONENTS = ["tok2vec", "spancat"]
