@@ -178,11 +178,11 @@ def evaluate_model(nlp, included_components, examples):
     return eval_metrics
 
 
-def _run_loop(nlp,
+def _run_loop(nlp, sampling_strategy,
               train_len, train_data, eval_data,
               included_components, max_iter, n_instances,
               rg_ds_name, rg_suggester_agent,
-              results_out, spans_key,
+              results_out, spans_key, models_dir,
               dummy):
     """Functional approach based Active Learning loop implementation.
        Using inplace objects mutation!"""
@@ -213,13 +213,20 @@ def _run_loop(nlp,
             "spans_key": spans_key,
             "n_instances": n_instances
         }
+        random_exluded = ["nlp", "included_components", "spans_key"]
         if iteration != 1:
-            q_func = query_least_confidence
+            if sampling_strategy == "least_confidence":
+                q_func = query_least_confidence
+            elif sampling_strategy == "random":
+                for ex_kwarg in random_exluded:
+                    del func_kwargs[ex_kwarg]
+                q_func = query_random
+            else:
+                raise ValueError("Unknown sampling strategy")
         else:
             logging.info("Querying seed data...")
-            del func_kwargs["nlp"]
-            del func_kwargs["included_components"]
-            del func_kwargs["spans_key"]
+            for ex_kwarg in random_exluded:
+                del func_kwargs[ex_kwarg]
             q_func = query_random
 
         q_indexes, q_data = _query(
@@ -275,6 +282,14 @@ def _run_loop(nlp,
         log_results(results, out=results_out)
 
         iteration += 1
+
+        # Save partial models
+        spans_count = results["_spans_count"]
+        model_name = f"model_{iteration}it_{spans_count}spans.spacy"
+        model_path = models_dir / Path(model_name)
+
+        yield nlp, model_path, results
+
     pbar.close()
 
 
@@ -303,27 +318,29 @@ def main():
 
     DUMMY = True
 
-    MAX_ITER = 13
-    N_INSTANCES = 200
+    MAX_ITER = 50
+    N_INSTANCES = 50
+    STRATEGY = "least_confidence"
 
-    NAME = f"least_conf_{MAX_ITER}i_{N_INSTANCES}n_active_learned_kpwr-full"
+    NAME = f"{STRATEGY}_{MAX_ITER}i_{N_INSTANCES}n_kpwr-full"
     CONFIG_PATH = "./config/spacy/config_sm.cfg"
 
     AGENT_NAME = __file__.split("/")[-1].split(".")[0]
     RG_DATASET_NAME = "active_learninig_temp_dataset"
 
+    RUN_DIR = Path("runs") / Path(f"{NAME}_{_start_etime_str}")
+    MODELS_RUN_DIR = Path(RUN_DIR) / Path("models")
+    MODELS_RUN_DIR.mkdir(parents=True, exist_ok=True)
+
     DATA_DIR = Path("data")
-    MODELS_DIR = Path("models") / Path("scripts")
-    LOGS_DIR = Path("logs") / Path("scripts")
-    DATA_DIR.mkdir(exist_ok=True)
-    MODELS_DIR.mkdir(exist_ok=True)
-    LOGS_DIR.mkdir(exist_ok=True)
+    LOGS_DIR = RUN_DIR / Path("logs")
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
     TRAIN_DB = DATA_DIR / Path("inzynierka-kpwr-train-3-full.spacy")
     TEST_DB = DATA_DIR / Path("inzynierka-kpwr-test-3-full.spacy")
-    MODEL_OUT = MODELS_DIR / Path(f"{NAME}__{_start_etime_str}.spacy")
-    METRICS_OUT = LOGS_DIR / Path(f"{NAME}__{_start_etime_str}.metrics.jsonl")
-    assert not MODEL_OUT.exists()
+
+    METRICS_OUT = LOGS_DIR / Path(f"{NAME}.metrics.jsonl")
 
     LABELS = ["nam_liv_person", "nam_loc_gpe_city", "nam_loc_gpe_country"]
     COMPONENTS = ["tok2vec", "spancat"]
@@ -349,16 +366,23 @@ def main():
     train_data, test_data = load_data(nlp, TRAIN_DB, TEST_DB)
     train_len = len(train_data)
 
-    _run_loop(nlp,
-              train_len, train_data, test_data,
-              COMPONENTS, MAX_ITER, N_INSTANCES,
-              RG_DATASET_NAME, AGENT_NAME,
-              METRICS_OUT, SPANS_KEY,
-              DUMMY)
+    best_model = None
+    best_model_fscore = -1
+    best_model_path = None
+    for _nlp, _out, _res in _run_loop(nlp, STRATEGY,
+                                      train_len, train_data, test_data,
+                                      COMPONENTS, MAX_ITER, N_INSTANCES,
+                                      RG_DATASET_NAME, AGENT_NAME,
+                                      METRICS_OUT, SPANS_KEY, MODELS_RUN_DIR,
+                                      DUMMY):
+        _nlp_fscore = _res[f"spans_{SPANS_KEY}_f"]
+        if _nlp_fscore > best_model_fscore:
+            best_model = _nlp
+            best_model_path = _out
+        _nlp.to_disk(_out)
 
-    # Save the model to binary file
-    logging.info(f"Saving model to {MODEL_OUT}...")
-    nlp.to_disk(MODEL_OUT)
+    best_path = str(best_model_path).replace(".spacy", ".best.spacy")
+    best_model.to_disk(best_path)
 
 
 if __name__ == "__main__":
