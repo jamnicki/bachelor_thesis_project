@@ -1,5 +1,6 @@
 from spacy.lang.pl import Polish
 from spacy.util import fix_random_seed, minibatch, compounding
+from spacy.tokens import SpanGroup, Span
 from spacy.training import Corpus
 from thinc.api import Config
 
@@ -145,6 +146,7 @@ def dummy_query_oracle(train_data, q_indexes, spans_key):
        Simple gets annotations from the training data."""
     for q_idx, train_data_idx in enumerate(q_indexes):
         example = train_data[train_data_idx]
+        print("\n\n", example.text)
         doc_annotation = example.to_dict()["doc_annotation"]
         annotation = doc_annotation["spans"][spans_key]
         yield q_idx, annotation
@@ -152,9 +154,26 @@ def dummy_query_oracle(train_data, q_indexes, spans_key):
 
 def _insert_oracle_annotation(_q_data, q_idx, q_oracle_ann, spans_key):
     """In-place insertion of oracle annotation into the queried data"""
-    # FIXME: does't work, Example object in not subscriptable, maybe create new
-    #        example object with the new annotation, then overwrite?
-    _q_data[q_idx]["doc_annotation"]["spans"][spans_key] = q_oracle_ann
+    ref_doc = _q_data[q_idx].reference
+    new_spacy_annots = [ann_rg2spacy(ann) for ann in q_oracle_ann]
+    _q_data[q_idx].reference.spans[spans_key] = [
+        Span(ref_doc, start, end, label=label)
+        for (start, end, label) in new_spacy_annots
+    ]
+
+
+def _insert_dummy_oracle_annotation(_q_data, q_idx, q_oracle_ann, spans_key):
+    """In-place insertion of oracle annotation into the queried data"""
+    # print("\n\n", _q_data[q_idx].reference.to_json(), "\n")
+    print(list(q_oracle_ann))
+    ref_doc = _q_data[q_idx].reference
+    _q_data[q_idx].reference.spans[spans_key] = SpanGroup(
+        ref_doc, spans=[
+            Span(ref_doc, start, end, label=label, kb_id=kb_id)
+            for (start, end, label, kb_id) in q_oracle_ann
+        ]
+    )
+    # print(_q_data[q_idx].reference.to_json(), "\n\n")
 
 
 def update_model(nlp, optimizer, included_components, examples):
@@ -229,6 +248,7 @@ def _run_loop(nlp, sampling_strategy,
                 del func_kwargs[ex_kwarg]
             q_func = query_random
 
+        # indexes of dataset
         q_indexes, q_data = _query(
             func=q_func,
             func_kwargs=func_kwargs,
@@ -249,10 +269,12 @@ def _run_loop(nlp, sampling_strategy,
         # DATA BECAUSE IT IS ALREADY THERE
         # IT WILL BE NOT ANNOTATED IN THE FUTURE
 
-        # TODO: Insert annotations from Oracle into the enlarged training data
-        # for q_idx, qo_ann in dummy_query_oracle(train_data, q_indexes,
-        #                                         spans_key):
-        #     _insert_oracle_annotation(q_data, q_idx, qo_ann, spans_key)
+        # Insert annotations from Oracle into the queried data
+        for q_idx, qo_ann in dummy_query_oracle(train_data, q_indexes,
+                                                spans_key):
+            print("\n\n", q_data[q_idx].reference.spans[spans_key], "\n")
+            _insert_dummy_oracle_annotation(q_data, q_idx, qo_ann, spans_key)
+            print(q_data[q_idx].reference.spans[spans_key], "\n\n")
 
         # Extend the training dataset
         _loop_train_data.extend(q_data)
@@ -318,9 +340,9 @@ def main():
 
     DUMMY = True
 
-    MAX_ITER = 50
-    N_INSTANCES = 50
-    STRATEGY = "least_confidence"
+    MAX_ITER = 11
+    N_INSTANCES = 11
+    STRATEGY = "random"
 
     NAME = f"{STRATEGY}_{MAX_ITER}i_{N_INSTANCES}n_kpwr-full"
     CONFIG_PATH = "./config/spacy/config_sm.cfg"
