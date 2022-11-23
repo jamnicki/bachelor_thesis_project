@@ -160,6 +160,9 @@ cython_debug/
 #.idea/
 
 
+# VSCode
+.vscode/
+
 .temp*
 
 papers/*.pdf
