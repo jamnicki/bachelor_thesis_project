@@ -19,12 +19,14 @@ class LeastConfidenceSampler(Sampler):
         self.indexes_by_score: Iterable[Idx] = []
         self.include_arr: np.ndarray = np.array([])
 
-    def __call__(self,
-                 scores: Iterable[Score],
-                 exclude: Iterable[Idx],
-                 num: int,
-                 strict: bool = True
-            ) -> Generator[Union[Idx, None], None, None]:
+    def __call__(
+        self,
+        scores: Iterable[Score],
+        exclude: Iterable[Idx],
+        num: int,
+        strict: bool = True
+    ) -> Generator[Union[Idx, None], None, None]:
+
         scores_len = len(scores)
         if strict and scores_len - len(exclude) < num:
             raise ValueError("Number of samples cannot be larger than lenght "
