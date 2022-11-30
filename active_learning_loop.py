@@ -1,6 +1,6 @@
 from spacy.lang.pl import Polish
 from spacy.util import fix_random_seed, minibatch, compounding
-from spacy.tokens import SpanGroup, Span
+from spacy.tokens import SpanGroup
 from spacy.training import Corpus
 from thinc.api import Config
 
@@ -80,7 +80,7 @@ def _query(func, func_kwargs, _labels_queried, _queried, spans_key):
     """Query the data using given function and keyword arguments.
        Using inplace object mutation on variables that start with underscore!
     """
-    q_indexes = set()
+    q_indexes = []
     q_data = []
     for q_idx, q_example in func(**func_kwargs):
         q_doc_annotation = q_example.to_dict()["doc_annotation"]
@@ -89,7 +89,7 @@ def _query(func, func_kwargs, _labels_queried, _queried, spans_key):
             span_label = span[2]
             _labels_queried[span_label] += 1
             _labels_queried["_all"] += 1
-        q_indexes.add(q_idx)
+        q_indexes.append(q_idx)
         q_data.append(q_example)
     _queried.update(q_indexes)
     return q_indexes, q_data
@@ -146,7 +146,6 @@ def dummy_query_oracle(train_data, q_indexes, spans_key):
        Simple gets annotations from the training data."""
     for q_idx, train_data_idx in enumerate(q_indexes):
         example = train_data[train_data_idx]
-        print("\n\n", example.text)
         doc_annotation = example.to_dict()["doc_annotation"]
         annotation = doc_annotation["spans"][spans_key]
         yield q_idx, annotation
@@ -156,24 +155,23 @@ def _insert_oracle_annotation(_q_data, q_idx, q_oracle_ann, spans_key):
     """In-place insertion of oracle annotation into the queried data"""
     ref_doc = _q_data[q_idx].reference
     new_spacy_annots = [ann_rg2spacy(ann) for ann in q_oracle_ann]
-    _q_data[q_idx].reference.spans[spans_key] = [
-        Span(ref_doc, start, end, label=label)
-        for (start, end, label) in new_spacy_annots
-    ]
+    _q_data[q_idx].reference.spans[spans_key] = SpanGroup(
+        ref_doc, spans=[
+            ref_doc.char_span(start, end, label=label)
+            for (start, end, label) in new_spacy_annots
+        ]
+    )
 
 
 def _insert_dummy_oracle_annotation(_q_data, q_idx, q_oracle_ann, spans_key):
     """In-place insertion of oracle annotation into the queried data"""
-    # print("\n\n", _q_data[q_idx].reference.to_json(), "\n")
-    print(list(q_oracle_ann))
     ref_doc = _q_data[q_idx].reference
     _q_data[q_idx].reference.spans[spans_key] = SpanGroup(
         ref_doc, spans=[
-            Span(ref_doc, start, end, label=label, kb_id=kb_id)
+            ref_doc.char_span(start, end, label=label, kb_id=kb_id)
             for (start, end, label, kb_id) in q_oracle_ann
         ]
     )
-    # print(_q_data[q_idx].reference.to_json(), "\n\n")
 
 
 def update_model(nlp, optimizer, included_components, examples):
@@ -265,16 +263,14 @@ def _run_loop(nlp, sampling_strategy,
             if quit:
                 return None
 
-        # IN CASE OF DUMMY SYSTEM WE DO NOT NEED INSERT ANNOTATION TO QUERY
-        # DATA BECAUSE IT IS ALREADY THERE
-        # IT WILL BE NOT ANNOTATED IN THE FUTURE
-
         # Insert annotations from Oracle into the queried data
         for q_idx, qo_ann in dummy_query_oracle(train_data, q_indexes,
                                                 spans_key):
-            print("\n\n", q_data[q_idx].reference.spans[spans_key], "\n")
-            _insert_dummy_oracle_annotation(q_data, q_idx, qo_ann, spans_key)
-            print(q_data[q_idx].reference.spans[spans_key], "\n\n")
+            if dummy:
+                _insert_dummy_oracle_annotation(q_data, q_idx, qo_ann,
+                                                spans_key)
+            else:
+                _insert_oracle_annotation(q_data, q_idx, qo_ann, spans_key)
 
         # Extend the training dataset
         _loop_train_data.extend(q_data)
@@ -340,11 +336,11 @@ def main():
 
     DUMMY = True
 
-    MAX_ITER = 11
-    N_INSTANCES = 11
+    MAX_ITER = 10
+    N_INSTANCES = 10
     STRATEGY = "random"
 
-    NAME = f"{STRATEGY}_{MAX_ITER}i_{N_INSTANCES}n_kpwr-full"
+    NAME = f"temp_refecator_{STRATEGY}_{MAX_ITER}i_{N_INSTANCES}n_kpwr-short"
     CONFIG_PATH = "./config/spacy/config_sm.cfg"
 
     AGENT_NAME = __file__.split("/")[-1].split(".")[0]
@@ -359,8 +355,8 @@ def main():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
-    TRAIN_DB = DATA_DIR / Path("inzynierka-kpwr-train-3-full.spacy")
-    TEST_DB = DATA_DIR / Path("inzynierka-kpwr-test-3-full.spacy")
+    TRAIN_DB = DATA_DIR / Path("inzynierka-kpwr-train-3.spacy")
+    TEST_DB = DATA_DIR / Path("inzynierka-kpwr-test-3.spacy")
 
     METRICS_OUT = LOGS_DIR / Path(f"{NAME}.metrics.jsonl")
 
