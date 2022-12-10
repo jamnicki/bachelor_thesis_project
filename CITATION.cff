@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+- family-names: "Jamnicki"
+  given-names: "Jędrzej"
+title: "bachelor_thesis_project"
+version: 1.0.0
+date-released: 2022-11-13
+url: "https://github.com/jamnicki/bachelor_thesis_project"
+note: "Thesis topic: System for Training-based Expansion of Tools for Proper Name Mentions Recognition Based on Active Learning"
