@@ -336,11 +336,11 @@ def main():
 
     DUMMY = True
 
-    MAX_ITER = 10
-    N_INSTANCES = 10
-    STRATEGY = "random"
+    MAX_ITER = 50
+    N_INSTANCES = 50
+    STRATEGY = "least_confidence"
 
-    NAME = f"temp_refecator_{STRATEGY}_{MAX_ITER}i_{N_INSTANCES}n_kpwr-short"
+    NAME = f"test_threshold_{STRATEGY}_{MAX_ITER}i_{N_INSTANCES}n_kpwr"
     CONFIG_PATH = "./config/spacy/config_sm.cfg"
 
     AGENT_NAME = __file__.split("/")[-1].split(".")[0]
@@ -355,8 +355,8 @@ def main():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
-    TRAIN_DB = DATA_DIR / Path("inzynierka-kpwr-train-3.spacy")
-    TEST_DB = DATA_DIR / Path("inzynierka-kpwr-test-3.spacy")
+    TRAIN_DB = DATA_DIR / Path("inzynierka-kpwr-train-3-full.spacy")
+    TEST_DB = DATA_DIR / Path("inzynierka-kpwr-test-3-full.spacy")
 
     METRICS_OUT = LOGS_DIR / Path(f"{NAME}.metrics.jsonl")
 
@@ -395,6 +395,7 @@ def main():
                                       DUMMY):
         _nlp_fscore = _res[f"spans_{SPANS_KEY}_f"]
         if _nlp_fscore > best_model_fscore:
+            best_model_fscore = _nlp_fscore
             best_model = _nlp
             best_model_path = _out
         _nlp.to_disk(_out)
