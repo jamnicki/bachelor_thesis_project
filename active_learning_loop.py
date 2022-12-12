@@ -18,7 +18,7 @@ from datetime import datetime as dt
 from _temp_query_strategies import query_random, query_least_confidence
 
 import logging
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 
 random.seed(42)
 fix_random_seed(42)
@@ -97,12 +97,13 @@ def _query(func, func_kwargs, _labels_queried, _queried, spans_key):
 
 def ann_spacy2rg(spacy_ann):
     """Convert spaCy's span annotation to Argilla's"""
-    start, end, label, *_ = spacy_ann
+    start, end, label, _ = spacy_ann
     return label, start, end
 
 
 def ann_rg2spacy(rg_ann):
     """Convert Argilla's span annotation to spaCy's"""
+    print(f"\n\n{rg_ann}\n\n")
     label, start, end = rg_ann
     return start, end, label
 
@@ -136,7 +137,8 @@ def serve_query_data_for_annotation(
 def query_oracle(q_indexes, ds_name):
     """Query oracle for annotations.
        Reads the annotations from Argilla records with given indexes."""
-    annotated_records = rg.load(ds_name, ids=q_indexes)
+    str_q_indexes = tuple(map(str, q_indexes))
+    annotated_records = rg.load(ds_name, ids=str_q_indexes)
     for record in annotated_records:
         yield record.id, record.annotation
 
@@ -264,12 +266,13 @@ def _run_loop(nlp, sampling_strategy,
                 return None
 
         # Insert annotations from Oracle into the queried data
-        for q_idx, qo_ann in dummy_query_oracle(train_data, q_indexes,
-                                                spans_key):
-            if dummy:
+        if dummy:
+            for q_idx, qo_ann in dummy_query_oracle(train_data, q_indexes,
+                                                    spans_key):
                 _insert_dummy_oracle_annotation(q_data, q_idx, qo_ann,
                                                 spans_key)
-            else:
+        else:
+            for q_idx, qo_ann in query_oracle(train_data, rg_ds_name):
                 _insert_oracle_annotation(q_data, q_idx, qo_ann, spans_key)
 
         # Extend the training dataset
@@ -334,17 +337,17 @@ def main():
 
     _start_etime_str = str(etime()).replace(".", "f")
 
-    DUMMY = True
+    DUMMY = False
 
-    MAX_ITER = 50
+    MAX_ITER = 10
     N_INSTANCES = 50
     STRATEGY = "least_confidence"
 
-    NAME = f"test_threshold_{STRATEGY}_{MAX_ITER}i_{N_INSTANCES}n_kpwr"
+    NAME = f"unlabelled_{STRATEGY}_{MAX_ITER}i_{N_INSTANCES}n_kpwr"
     CONFIG_PATH = "./config/spacy/config_sm.cfg"
 
     AGENT_NAME = __file__.split("/")[-1].split(".")[0]
-    RG_DATASET_NAME = "active_learninig_temp_dataset"
+    RG_DATASET_NAME = "unlabelled_active_learninig_dataset"
 
     RUN_DIR = Path("runs") / Path(f"{NAME}_{_start_etime_str}")
     MODELS_RUN_DIR = Path(RUN_DIR) / Path("models")
